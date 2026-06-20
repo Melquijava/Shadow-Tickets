@@ -34,12 +34,8 @@ const REQUIRED_ENV = [
   'VAGAS_MEDIADORES_CHANNEL_ID',
   'STAFF_ROLE_ID',
   'MEDIADOR_ROLE_ID',
-  'OWNER_ROLE_ID',
-  'DONO_USER_ID',
   'MEDIADORES_CADASTRADOS_CHANNEL_ID',
-  'MEDIADORES_PANEL_CHANNEL_ID',
   'LOG_CHANNEL_ID',
-  'LOG_MEDIADORES_CHANNEL_ID',
   'DATA_ENCRYPTION_KEY',
 ];
 
@@ -56,23 +52,31 @@ const config = {
   panelChannelId: process.env.OPEN_TICKET_CHANNEL_ID,
   staffRoleId: process.env.STAFF_ROLE_ID,
   mediatorRoleId: process.env.MEDIADOR_ROLE_ID,
-  ownerRoleId: process.env.OWNER_ROLE_ID,
-  ownerUserId: process.env.DONO_USER_ID,
+  ownerRoleId: process.env.OWNER_ROLE_ID || null,
+  ownerUserId: process.env.DONO_USER_ID || null,
   registeredMediatorsChannelId: process.env.MEDIADORES_CADASTRADOS_CHANNEL_ID,
-  mediatorsPanelChannelId: process.env.MEDIADORES_PANEL_CHANNEL_ID,
+  mediatorsPanelChannelId:
+    process.env.MEDIADORES_PANEL_CHANNEL_ID || process.env.MEDIADORES_CADASTRADOS_CHANNEL_ID,
   logChannelId: process.env.LOG_CHANNEL_ID,
-  mediatorsLogChannelId: process.env.LOG_MEDIADORES_CHANNEL_ID,
+  mediatorsLogChannelId: process.env.LOG_MEDIADORES_CHANNEL_ID || process.env.LOG_CHANNEL_ID,
 };
+
+if (!config.ownerRoleId && !config.ownerUserId) {
+  console.error('Preencha ao menos uma variável: OWNER_ROLE_ID ou DONO_USER_ID.');
+  process.exit(1);
+}
 
 function loadEncryptionKey(value) {
   const trimmed = value.trim();
-  const key = /^[a-f\d]{64}$/i.test(trimmed)
-    ? Buffer.from(trimmed, 'hex')
-    : Buffer.from(trimmed, 'base64');
-  if (key.length !== 32) {
-    throw new Error('DATA_ENCRYPTION_KEY deve conter 32 bytes em Base64 ou 64 caracteres hexadecimais.');
+  if (/^[a-f\d]{64}$/i.test(trimmed)) return Buffer.from(trimmed, 'hex');
+  if (/^[A-Za-z\d+/]{43}=$/.test(trimmed)) {
+    const decoded = Buffer.from(trimmed, 'base64');
+    if (decoded.length === 32) return decoded;
   }
-  return key;
+  if (trimmed.length < 32) {
+    throw new Error('DATA_ENCRYPTION_KEY deve ter pelo menos 32 caracteres.');
+  }
+  return crypto.createHash('sha256').update(trimmed, 'utf8').digest();
 }
 
 const DATA_ENCRYPTION_KEY = loadEncryptionKey(process.env.DATA_ENCRYPTION_KEY);
