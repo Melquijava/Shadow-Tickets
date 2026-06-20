@@ -6,8 +6,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const {
   ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
+  AttachmentBuilder,
   ChannelType,
   Client,
   Colors,
@@ -193,6 +192,7 @@ const queries = {
     VALUES (?, ?, ?, ?)
   `),
   byThread: db.prepare('SELECT * FROM tickets WHERE thread_id = ?'),
+  openTickets: db.prepare("SELECT * FROM tickets WHERE status = 'aberto'"),
   openByUserType: db.prepare(
     "SELECT * FROM tickets WHERE user_id = ? AND type = ? AND status = 'aberto' LIMIT 1",
   ),
@@ -361,16 +361,19 @@ function mediatorsPanelEmbed() {
 function mediatorsPanelComponents() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('mediators:give').setLabel('Dar Cargo').setEmoji('✅').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('mediators:remove').setLabel('Tirar Cargo').setEmoji('❌').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('mediators:ban').setLabel('Banir Mediador').setEmoji('⛔').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId('mediators:leave').setLabel('Dar Baixa').setEmoji('📉').setStyle(ButtonStyle.Danger),
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('mediators:notify').setLabel('Notificar').setEmoji('📢').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('mediators:warn').setLabel('Advertir').setEmoji('⚠️').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId('mediators:consult').setLabel('Consultar Mediador').setEmoji('📋').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('mediators:history').setLabel('Histórico').setEmoji('🗂️').setStyle(ButtonStyle.Secondary),
+      new StringSelectMenuBuilder()
+        .setCustomId('mediators:admin_menu')
+        .setPlaceholder('Clique aqui para ver os controles de mediadores')
+        .addOptions(
+          { label: 'Dar Cargo', description: 'Adicionar o cargo de mediador.', value: 'give', emoji: '✅' },
+          { label: 'Tirar Cargo', description: 'Remover o cargo de mediador.', value: 'remove', emoji: '❌' },
+          { label: 'Banir Mediador', description: 'Remover e banir um mediador.', value: 'ban', emoji: '⛔' },
+          { label: 'Dar Baixa', description: 'Registrar a baixa de um mediador.', value: 'leave', emoji: '📉' },
+          { label: 'Notificar', description: 'Enviar uma notificação por DM.', value: 'notify', emoji: '📢' },
+          { label: 'Advertir', description: 'Aplicar uma advertência.', value: 'warn', emoji: '⚠️' },
+          { label: 'Consultar Mediador', description: 'Consultar o cadastro protegido.', value: 'consult', emoji: '📋' },
+          { label: 'Histórico', description: 'Ver as últimas ações registradas.', value: 'history', emoji: '🗂️' },
+        ),
     ),
   ];
 }
@@ -392,67 +395,29 @@ function mediatorActionModal(action, userId, title, detailLabel) {
 }
 
 function adminComponents(disabled = false, type = null) {
-  const rows = [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('ticket:claim')
-        .setLabel('Assumir Ticket')
-        .setEmoji('✅')
-        .setStyle(ButtonStyle.Success)
-        .setDisabled(disabled),
-      new ButtonBuilder()
-        .setCustomId('ticket:responsible')
-        .setLabel('Transferir Responsável')
-        .setEmoji('🔁')
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(disabled),
-      new ButtonBuilder()
-        .setCustomId('ticket:sector')
-        .setLabel('Transferir Setor')
-        .setEmoji('📂')
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(disabled),
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('ticket:add')
-        .setLabel('Adicionar Pessoa')
-        .setEmoji('➕')
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(disabled),
-      new ButtonBuilder()
-        .setCustomId('ticket:remove')
-        .setLabel('Remover Pessoa')
-        .setEmoji('➖')
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(disabled),
-      new ButtonBuilder()
-        .setCustomId('ticket:close')
-        .setLabel('Fechar Ticket')
-        .setEmoji('🔒')
-        .setStyle(ButtonStyle.Danger)
-        .setDisabled(disabled),
-    ),
+  const options = [
+    { label: 'Assumir Ticket', description: 'Tornar-se responsável pelo atendimento.', value: 'claim', emoji: '✅' },
+    { label: 'Transferir Responsável', description: 'Escolher outro responsável.', value: 'responsible', emoji: '🔁' },
+    { label: 'Transferir Setor', description: 'Mover o ticket para outro setor.', value: 'sector', emoji: '📂' },
+    { label: 'Adicionar Pessoa', description: 'Adicionar alguém ao tópico.', value: 'add', emoji: '➕' },
+    { label: 'Remover Pessoa', description: 'Remover alguém do tópico.', value: 'remove', emoji: '➖' },
+    { label: 'Fechar Ticket', description: 'Encerrar e excluir o ticket.', value: 'close', emoji: '🔒' },
   ];
   if (type === 'mediador') {
-    rows.push(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('ticket:mediator_approve')
-          .setLabel('Aprovar Mediador')
-          .setEmoji('✅')
-          .setStyle(ButtonStyle.Success)
-          .setDisabled(disabled),
-        new ButtonBuilder()
-          .setCustomId('ticket:mediator_reject')
-          .setLabel('Recusar Mediador')
-          .setEmoji('❌')
-          .setStyle(ButtonStyle.Danger)
-          .setDisabled(disabled),
-      ),
+    options.push(
+      { label: 'Aprovar Mediador', description: 'Aprovar esta candidatura.', value: 'mediator_approve', emoji: '✅' },
+      { label: 'Recusar Mediador', description: 'Recusar esta candidatura.', value: 'mediator_reject', emoji: '❌' },
     );
   }
-  return rows;
+  return [
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId('ticket:admin_menu')
+        .setPlaceholder('Clique aqui para ver os controles do ticket')
+        .setDisabled(disabled)
+        .addOptions(options),
+    ),
+  ];
 }
 
 function ticketEmbed(ticket, openerId) {
@@ -471,7 +436,7 @@ function ticketEmbed(ticket, openerId) {
       },
       { name: 'Status', value: '🟢 Aberto', inline: true },
     )
-    .setFooter({ text: 'Use os botões abaixo para administrar este atendimento.' })
+    .setFooter({ text: 'Use o menu abaixo para administrar este atendimento.' })
     .setTimestamp(new Date(ticket.created_at));
 }
 
@@ -717,6 +682,73 @@ async function forwardThreadContent(sourceThread, targetThread) {
   return messages.length;
 }
 
+function redactTranscriptText(value) {
+  return value
+    .replace(/\b(\d{3})\.?\d{3}\.?\d{3}-?(\d{2})\b/g, '***.***.***-$2')
+    .replace(/(endere[cç]o\s*:?\s*)[^\r\n]+/gi, '$1[PROTEGIDO]');
+}
+
+function transcriptMessageText(message, ticket) {
+  const timestamp = message.createdAt.toISOString();
+  const header = `[${timestamp}] ${message.author.tag} (${message.author.id})`;
+  const parts = [];
+  if (message.content) parts.push(redactTranscriptText(message.content));
+  for (const embed of message.embeds) {
+    if (embed.title) parts.push(`[EMBED] ${redactTranscriptText(embed.title)}`);
+    if (embed.description) parts.push(redactTranscriptText(embed.description));
+    for (const field of embed.fields) {
+      parts.push(`${redactTranscriptText(field.name)}: ${redactTranscriptText(field.value)}`);
+    }
+  }
+  for (const attachment of message.attachments.values()) {
+    parts.push(
+      ticket.type === 'mediador'
+        ? `[ANEXO PROTEGIDO OMITIDO] ${attachment.name}`
+        : `[ANEXO] ${attachment.name}: ${attachment.url}`,
+    );
+  }
+  for (const sticker of message.stickers.values()) parts.push(`[FIGURINHA] ${sticker.name}`);
+  return `${header}\n${parts.join('\n') || '[Mensagem sem conteúdo textual]'}\n`;
+}
+
+async function sendTicketTranscript(guild, thread, ticket, closedById) {
+  const logChannel = await guild.channels.fetch(config.logChannelId);
+  if (!logChannel?.isTextBased()) throw new Error('LOG_CHANNEL_ID não aponta para um canal de texto válido.');
+  const messages = await fetchAllThreadMessages(thread);
+  const transcript = [
+    `SHADOW TICKETS — TRANSCRIPT #${ticket.id}`,
+    `Tópico: ${thread.name} (${thread.id})`,
+    `Setor: ${TICKET_TYPES[ticket.type]?.label || ticket.type}`,
+    `Solicitante: ${ticket.user_id}`,
+    `Responsável: ${ticket.responsible_id || 'Não definido'}`,
+    `Fechado por: ${closedById}`,
+    `Gerado em: ${new Date().toISOString()}`,
+    '',
+    ...messages.map((message) => transcriptMessageText(message, ticket)),
+  ].join('\n');
+
+  const maxChunkLength = 2_000_000;
+  const chunks = [];
+  for (let offset = 0; offset < transcript.length; offset += maxChunkLength) {
+    chunks.push(transcript.slice(offset, offset + maxChunkLength));
+  }
+  for (let index = 0; index < chunks.length; index += 1) {
+    const suffix = chunks.length > 1 ? `-parte-${index + 1}` : '';
+    const attachment = new AttachmentBuilder(Buffer.from(chunks[index], 'utf8'), {
+      name: `transcript-ticket-${ticket.id}${suffix}.txt`,
+    });
+    await logChannel.send({
+      content:
+        index === 0
+          ? `📄 Transcript do ticket **#${ticket.id}** • <@${ticket.user_id}> • fechado por <@${closedById}>`
+          : `📄 Continuação do transcript do ticket **#${ticket.id}**`,
+      files: [attachment],
+      allowedMentions: { parse: [] },
+    });
+  }
+  return messages.length;
+}
+
 function isStaff(member) {
   return Boolean(
     member &&
@@ -855,6 +887,26 @@ async function sendMediatorsPanel(guild, forceNew = false) {
   return message;
 }
 
+async function refreshOpenTicketPanels(guild) {
+  for (const ticket of queries.openTickets.all()) {
+    const thread = await guild.channels.fetch(ticket.thread_id).catch(() => null);
+    if (!thread?.isThread()) continue;
+    const messages = await fetchAllThreadMessages(thread).catch(() => []);
+    const panelMessage = messages.find(
+      (message) =>
+        message.author.id === client.user.id &&
+        message.components.some((row) =>
+          row.components.some((component) => component.customId?.startsWith('ticket:')),
+        ),
+    );
+    if (panelMessage) {
+      await panelMessage
+        .edit({ components: adminComponents(false, ticket.type) })
+        .catch((error) => console.error(`Falha ao atualizar painel do ticket #${ticket.id}:`, error));
+    }
+  }
+}
+
 async function createTicket(interaction, typeKey, mediatorApplication = null) {
   const type = TICKET_TYPES[typeKey];
   if (!type) return;
@@ -965,6 +1017,12 @@ async function closeTicket(interaction, ticket) {
 
   await interaction.deferReply({ ephemeral: true });
   const closedAt = new Date().toISOString();
+  const transcriptMessages = await sendTicketTranscript(
+    interaction.guild,
+    interaction.channel,
+    ticket,
+    interaction.user.id,
+  );
   queries.close.run(closedAt, ticket.id);
 
   const type = TICKET_TYPES[ticket.type];
@@ -1000,10 +1058,13 @@ async function closeTicket(interaction, ticket) {
         { name: 'Ticket', value: `#${ticket.id}`, inline: true },
         { name: 'Encerrado por', value: `<@${interaction.user.id}>`, inline: true },
         { name: 'Solicitante', value: `<@${ticket.user_id}>`, inline: true },
+        { name: 'Mensagens no transcript', value: String(transcriptMessages), inline: true },
       )
       .setTimestamp(),
   );
-  await interaction.editReply('Ticket fechado. Este tópico será excluído.');
+  await interaction.editReply(
+    `Ticket fechado. Transcript salvo com ${transcriptMessages} mensagens. Este tópico será excluído.`,
+  );
   await new Promise((resolve) => setTimeout(resolve, 2000));
   await interaction.channel.delete(`Ticket #${ticket.id} fechado por ${interaction.user.tag}`);
 }
@@ -1147,7 +1208,9 @@ async function handleAdminButton(interaction) {
     return;
   }
 
-  const action = interaction.customId.split(':')[1];
+  const action = interaction.isStringSelectMenu()
+    ? interaction.values[0]
+    : interaction.customId.split(':')[1];
   if (action === 'mediator_approve') {
     if (ticket.type !== 'mediador') {
       await interaction.reply({ content: 'Este controle só pode ser usado em vagas de mediadores.', ephemeral: true });
@@ -1249,15 +1312,23 @@ async function handleAdminButton(interaction) {
       ],
       components: [
         new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId('ticket:close_confirm')
-            .setLabel('Confirmar fechamento')
-            .setEmoji('🔒')
-            .setStyle(ButtonStyle.Danger),
-          new ButtonBuilder()
-            .setCustomId('ticket:close_cancel')
-            .setLabel('Cancelar')
-            .setStyle(ButtonStyle.Secondary),
+          new StringSelectMenuBuilder()
+            .setCustomId('ticket:close_confirmation')
+            .setPlaceholder('Escolha uma opção')
+            .addOptions(
+              {
+                label: 'Confirmar fechamento',
+                description: 'Excluir permanentemente este tópico.',
+                value: 'close_confirm',
+                emoji: '🔒',
+              },
+              {
+                label: 'Cancelar',
+                description: 'Manter o ticket aberto.',
+                value: 'close_cancel',
+                emoji: '↩️',
+              },
+            ),
         ),
       ],
       ephemeral: true,
@@ -1430,7 +1501,9 @@ async function handleMediatorsPanelButton(interaction) {
     await interaction.reply({ content: 'Apenas membros do cargo de staff podem usar este painel.', ephemeral: true });
     return;
   }
-  const action = interaction.customId.split(':')[1];
+  const action = interaction.isStringSelectMenu()
+    ? interaction.values[0]
+    : interaction.customId.split(':')[1];
   const placeholders = {
     give: 'Selecione quem receberá o cargo',
     remove: 'Selecione quem perderá o cargo',
@@ -1784,6 +1857,7 @@ client.once(Events.ClientReady, async (readyClient) => {
     const guild = await readyClient.guilds.fetch(config.guildId);
     await sendPanel(guild);
     await sendMediatorsPanel(guild);
+    await refreshOpenTicketPanels(guild);
     console.log(`Shadow Tickets online como ${readyClient.user.tag}.`);
   } catch (error) {
     console.error('Falha na inicialização:', error);
@@ -1807,7 +1881,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isButton() && interaction.customId.startsWith('mediators:')) {
       return await handleMediatorsPanelButton(interaction);
     }
+    if (interaction.isStringSelectMenu() && interaction.customId === 'mediators:admin_menu') {
+      return await handleMediatorsPanelButton(interaction);
+    }
     if (interaction.isButton() && interaction.customId.startsWith('ticket:')) {
+      return await handleAdminButton(interaction);
+    }
+    if (
+      interaction.isStringSelectMenu() &&
+      ['ticket:admin_menu', 'ticket:close_confirmation'].includes(interaction.customId)
+    ) {
       return await handleAdminButton(interaction);
     }
     if (interaction.isUserSelectMenu() && interaction.customId.startsWith('ticket_user:')) {
