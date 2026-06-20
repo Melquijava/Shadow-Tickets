@@ -1,0 +1,22 @@
+{
+  "name": "shadow-tickets",
+  "version": "1.0.0",
+  "description": "Sistema de tickets por tópicos para o servidor Shadow Apostas",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "check": "node --check index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "discord.js": "^14.26.4",
+    "dotenv": "^16.5.0"
+  },
+  "overrides": {
+    "undici": "6.27.0"
+  }
+}
