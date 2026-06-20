@@ -288,42 +288,57 @@ const commands = [
 
 function panelEmbed() {
   return new EmbedBuilder()
-    .setColor(0x2b2d31)
-    .setTitle('🎫 Shadow Tickets')
-    .setDescription('Escolha abaixo o tipo de atendimento que deseja abrir.')
-    .addFields(
-      { name: '🛠️ Suporte', value: 'Dúvidas, problemas ou ajuda geral.', inline: true },
-      { name: '💰 Reembolsos', value: 'Solicitações e análises de reembolso.', inline: true },
-      { name: '🎉 Receber Evento', value: 'Atendimento relacionado a eventos.', inline: true },
-      { name: '👻 Vagas Mediadores', value: 'Candidaturas para a equipe de mediação.', inline: true },
+    .setColor(0x00d4ff)
+    .setAuthor({
+      name: 'SHADOW TICKETS',
+      iconURL: client.user.displayAvatarURL(),
+    })
+    .setTitle('TICKET SHADOW')
+    .setDescription(
+      [
+        '> Seja bem-vindo(a) ao painel de tickets. Caso precise de algum suporte ou tenha alguma dúvida, abra um ticket selecionando a categoria desejada no menu abaixo.',
+        '',
+        '↪ **Selecione a opção do ticket de acordo com a sua necessidade.**',
+      ].join('\n'),
     )
-    .setFooter({ text: 'Shadow Apostas • Atendimento privado' })
+    .setFooter({ text: 'Shadow Apostas • Atendimento privado e seguro' })
     .setTimestamp();
 }
 
 function panelComponents() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('open:suporte')
-        .setLabel('Suporte')
-        .setEmoji('🛠️')
-        .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder()
-        .setCustomId('open:reembolso')
-        .setLabel('Reembolsos')
-        .setEmoji('💰')
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId('open:evento')
-        .setLabel('Receber Evento')
-        .setEmoji('🎉')
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId('open:mediador')
-        .setLabel('Vagas Mediadores')
-        .setEmoji('👻')
-        .setStyle(ButtonStyle.Secondary),
+      new StringSelectMenuBuilder()
+        .setCustomId('open:ticket_type')
+        .setPlaceholder('Clique aqui para ver as opções disponíveis')
+        .setMinValues(1)
+        .setMaxValues(1)
+        .addOptions(
+          {
+            label: 'Suporte',
+            description: 'Clique aqui caso precise de algum suporte.',
+            value: 'suporte',
+            emoji: '🛠️',
+          },
+          {
+            label: 'Reembolso',
+            description: 'Clique aqui caso precise de algum reembolso.',
+            value: 'reembolso',
+            emoji: '💰',
+          },
+          {
+            label: 'Receber Evento',
+            description: 'Clique aqui para receber um evento.',
+            value: 'evento',
+            emoji: '🎉',
+          },
+          {
+            label: 'Vagas Mediadores',
+            description: 'Clique aqui caso queira uma vaga de mediador.',
+            value: 'mediador',
+            emoji: '👻',
+          },
+        ),
     ),
   ];
 }
@@ -1766,6 +1781,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isChatInputCommand()) return await handleCommand(interaction);
     if (interaction.isButton() && interaction.customId.startsWith('open:')) {
       const type = interaction.customId.split(':')[1];
+      if (type === 'mediador') return await interaction.showModal(mediatorApplicationModal());
+      return await createTicket(interaction, type);
+    }
+    if (interaction.isStringSelectMenu() && interaction.customId === 'open:ticket_type') {
+      const type = interaction.values[0];
       if (type === 'mediador') return await interaction.showModal(mediatorApplicationModal());
       return await createTicket(interaction, type);
     }
