@@ -652,6 +652,67 @@ async function renameTicketThread(thread, typeKey, member) {
   );
 }
 
+async function fetchAllThreadMessages(thread) {
+  const messages = [];
+  let before;
+  while (true) {
+    const batch = await thread.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+    if (!batch.size) break;
+    messages.push(...batch.values());
+    before = batch.last().id;
+    if (batch.size < 100) break;
+  }
+  return messages.sort((first, second) => first.createdTimestamp - second.createdTimestamp);
+}
+
+async function forwardThreadContent(sourceThread, targetThread) {
+  const messages = await fetchAllThreadMessages(sourceThread);
+  await targetThread.send({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(Colors.Blurple)
+        .setTitle('📨 Histórico encaminhado')
+        .setDescription(`Conteúdo transferido de **${sourceThread.name}**.`)
+        .setTimestamp(),
+    ],
+  });
+
+  for (const message of messages) {
+    try {
+      await message.forward(targetThread);
+    } catch {
+      const attachmentLinks = [...message.attachments.values()].map((attachment) => attachment.url);
+      const embedDescriptions = message.embeds
+        .map((embed) => [embed.title, embed.description].filter(Boolean).join(' — '))
+        .filter(Boolean);
+      const stickerLinks = [...message.stickers.values()].map((sticker) => sticker.url);
+      const snapshot = [
+        message.content || null,
+        ...embedDescriptions,
+        ...attachmentLinks,
+        ...stickerLinks,
+      ]
+        .filter(Boolean)
+        .join('\n') || '[Mensagem sem conteúdo textual]';
+      await targetThread.send({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x4e5058)
+            .setAuthor({
+              name: message.author.tag,
+              iconURL: message.author.displayAvatarURL(),
+            })
+            .setDescription(snapshot.slice(0, 4096))
+            .setFooter({ text: `Mensagem original • ${message.id}` })
+            .setTimestamp(message.createdAt),
+        ],
+        allowedMentions: { parse: [] },
+      });
+    }
+  }
+  return messages.length;
+}
+
 function isStaff(member) {
   return Boolean(
     member &&
@@ -938,11 +999,9 @@ async function closeTicket(interaction, ticket) {
       )
       .setTimestamp(),
   );
-  await interaction.editReply('Ticket fechado. Este tópico será arquivado.');
-  setTimeout(async () => {
-    await interaction.channel.setLocked(true, 'Ticket fechado').catch(() => null);
-    await interaction.channel.setArchived(true, 'Ticket fechado').catch(() => null);
-  }, 1500);
+  await interaction.editReply('Ticket fechado. Este tópico será excluído.');
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  await interaction.channel.delete(`Ticket #${ticket.id} fechado por ${interaction.user.tag}`);
 }
 
 async function requireStaff(interaction) {
@@ -1177,7 +1236,7 @@ async function handleAdminButton(interaction) {
         new EmbedBuilder()
           .setColor(Colors.Orange)
           .setTitle('🔒 Confirmar fechamento')
-          .setDescription('Tem certeza de que deseja fechar e arquivar este ticket?'),
+          .setDescription('Tem certeza de que deseja fechar e excluir permanentemente este tópico?'),
       ],
       components: [
         new ActionRowBuilder().addComponents(
@@ -1309,37 +1368,53 @@ async function handleSectorSelect(interaction) {
   await Promise.allSettled(extraMembers.map(({ user_id: id }) => newThread.members.add(id)));
   if (ticket.responsible_id) await newThread.members.add(ticket.responsible_id).catch(() => null);
 
-  const updated = { ...ticket, thread_id: newThread.id, type: targetKey };
-  const mediatorRecord = queries.mediatorByTicket.get(ticket.id);
-  const protectedRecordEmbed = mediatorRecord
-    ? protectedApplicationEmbed({
-        realName: mediatorRecord.real_name,
-        cpf: decryptSensitive(mediatorRecord.cpf_encrypted),
-        age: mediatorRecord.age,
-        experience: mediatorRecord.experience,
-      })
-    : null;
-  const mentionedUsers = [ticket.user_id, ticket.responsible_id].filter(Boolean);
-  await newThread.send({
-    content: [
-      `<@${ticket.user_id}>`,
-      ticket.responsible_id ? `<@${ticket.responsible_id}>` : null,
-      `<@&${config.staffRoleId}>`,
-    ]
-      .filter(Boolean)
-      .join(' '),
-    allowedMentions: { users: mentionedUsers, roles: [config.staffRoleId] },
-    embeds: [ticketEmbed(updated, ticket.user_id), ...(protectedRecordEmbed ? [protectedRecordEmbed] : [])],
-    components: adminComponents(false, targetKey === 'mediador' && mediatorRecord ? 'mediador' : null),
+  await interaction.editReply({
+    content: `Transferindo todo o histórico para <#${newThread.id}>...`,
+    components: [],
   });
-  await newThread.send(`📂 Ticket transferido de **${TICKET_TYPES[ticket.type].label}** para **${target.label}** por <@${interaction.user.id}>.`);
+
+  let copiedMessages;
+  try {
+    copiedMessages = await forwardThreadContent(interaction.channel, newThread);
+    const updated = { ...ticket, thread_id: newThread.id, type: targetKey };
+    const mediatorRecord = queries.mediatorByTicket.get(ticket.id);
+    const protectedRecordEmbed = mediatorRecord
+      ? protectedApplicationEmbed({
+          realName: mediatorRecord.real_name,
+          cpf: decryptSensitive(mediatorRecord.cpf_encrypted),
+          age: mediatorRecord.age,
+          experience: mediatorRecord.experience,
+        })
+      : null;
+    const mentionedUsers = [ticket.user_id, ticket.responsible_id].filter(Boolean);
+    await newThread.send({
+      content: [
+        `<@${ticket.user_id}>`,
+        ticket.responsible_id ? `<@${ticket.responsible_id}>` : null,
+        `<@&${config.staffRoleId}>`,
+      ]
+        .filter(Boolean)
+        .join(' '),
+      allowedMentions: { users: mentionedUsers, roles: [config.staffRoleId] },
+      embeds: [ticketEmbed(updated, ticket.user_id), ...(protectedRecordEmbed ? [protectedRecordEmbed] : [])],
+      components: adminComponents(false, targetKey === 'mediador' && mediatorRecord ? 'mediador' : null),
+    });
+    await newThread.send(
+      `📂 Ticket transferido de **${TICKET_TYPES[ticket.type].label}** para **${target.label}** por <@${interaction.user.id}>.`,
+    );
+  } catch (error) {
+    await newThread.delete('Falha ao copiar integralmente o ticket').catch(() => null);
+    throw error;
+  }
+
   queries.transferThread.run(newThread.id, targetKey, ticket.id);
-  await interaction.editReply({ content: `Ticket transferido para <#${newThread.id}>.`, components: [] });
-  await interaction.channel.send(`📂 Este atendimento foi transferido para <#${newThread.id}> e será arquivado.`);
-  setTimeout(async () => {
-    await interaction.channel.setLocked(true, 'Ticket transferido de setor').catch(() => null);
-    await interaction.channel.setArchived(true, 'Ticket transferido de setor').catch(() => null);
-  }, 1500);
+  await interaction.editReply({
+    content: `Ticket transferido para <#${newThread.id}> com ${copiedMessages} mensagens encaminhadas.`,
+    components: [],
+  });
+  await interaction.channel.send(`📂 Este atendimento foi transferido para <#${newThread.id}> e será excluído.`);
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  await interaction.channel.delete(`Ticket #${ticket.id} transferido para ${target.label}`);
 }
 
 async function handleMediatorsPanelButton(interaction) {
