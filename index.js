@@ -22,6 +22,7 @@ const {
   StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle,
+  UserSelectMenuBuilder,
 } = require('discord.js');
 
 const REQUIRED_ENV = [
@@ -374,24 +375,11 @@ function mediatorsPanelComponents() {
   ];
 }
 
-function mediatorPanelModal(action, title, detailLabel = null) {
-  const modal = new ModalBuilder()
-    .setCustomId(`mediator_panel_modal:${action}`)
+function mediatorActionModal(action, userId, title, detailLabel) {
+  return new ModalBuilder()
+    .setCustomId(`mediator_action:${action}:${userId}`)
     .setTitle(title)
     .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId('member')
-          .setLabel('ID ou menção do usuário')
-          .setPlaceholder('Ex.: 123456789012345678 ou @pessoa')
-          .setStyle(TextInputStyle.Short)
-          .setMinLength(17)
-          .setMaxLength(25)
-          .setRequired(true),
-      ),
-    );
-  if (detailLabel) {
-    modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId('details')
@@ -401,8 +389,6 @@ function mediatorPanelModal(action, title, detailLabel = null) {
           .setRequired(true),
       ),
     );
-  }
-  return modal;
 }
 
 function adminComponents(disabled = false, type = null) {
@@ -531,27 +517,14 @@ function cleanThreadName(prefix, username) {
   return `${prefix}-${clean || 'usuario'}`.slice(0, 100);
 }
 
-function memberInputModal(action, title, label) {
-  return new ModalBuilder()
-    .setCustomId(`modal:${action}`)
-    .setTitle(title)
-    .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId('member')
-          .setLabel(label)
-          .setPlaceholder('Ex.: 123456789012345678 ou @pessoa')
-          .setStyle(TextInputStyle.Short)
-          .setMinLength(17)
-          .setMaxLength(25)
-          .setRequired(true),
-      ),
-    );
-}
-
-function parseMemberId(value) {
-  const match = value.trim().match(/^(?:<@!?)?(\d{17,20})>?$/);
-  return match?.[1] || null;
+function userSelectRow(customId, placeholder) {
+  return new ActionRowBuilder().addComponents(
+    new UserSelectMenuBuilder()
+      .setCustomId(customId)
+      .setPlaceholder(placeholder)
+      .setMinValues(1)
+      .setMaxValues(1),
+  );
 }
 
 function encryptSensitive(value) {
@@ -657,6 +630,22 @@ function protectedApplicationEmbed(application) {
     )
     .setFooter({ text: 'Dados sensíveis protegidos por criptografia.' })
     .setTimestamp();
+}
+
+async function sendMediatorDocumentRequest(thread, userId) {
+  await thread.send({
+    content: `<@${userId}>`,
+    allowedMentions: { users: [userId] },
+    embeds: [
+      new EmbedBuilder()
+        .setColor(Colors.Orange)
+        .setTitle('📌 Confirmação de identidade')
+        .setDescription(
+          '**Por gentileza, envie um comprovante de endereço acompanhado de um documento de identidade para confirmação e aprovação da Shadow Apostas.**',
+        )
+        .setFooter({ text: 'Envie os documentos somente neste tópico privado.' }),
+    ],
+  });
 }
 
 async function renameTicketThread(thread, typeKey, member) {
@@ -790,11 +779,8 @@ async function addRoleMembersToThread(guild, thread, roleId) {
   await Promise.allSettled(members.map((member) => thread.members.add(member.id)));
 }
 
-async function addOperationalMembers(guild, thread, type) {
+async function addOperationalMembers(guild, thread) {
   await addRoleMembersToThread(guild, thread, config.staffRoleId);
-  if (type === 'mediador' && config.mediatorRoleId !== config.staffRoleId) {
-    await addRoleMembersToThread(guild, thread, config.mediatorRoleId);
-  }
 }
 
 async function sendLog(guild, embed) {
@@ -903,7 +889,7 @@ async function createTicket(interaction, typeKey, mediatorApplication = null) {
 
   try {
     await thread.members.add(interaction.user.id);
-    await addOperationalMembers(interaction.guild, thread, typeKey);
+    await addOperationalMembers(interaction.guild, thread);
     if (typeKey === 'mediador' && mediatorApplication) {
       queries.createMediatorApplication.run(
         ticket.id,
@@ -925,6 +911,9 @@ async function createTicket(interaction, typeKey, mediatorApplication = null) {
       ],
       components: adminComponents(false, typeKey),
     });
+    if (typeKey === 'mediador') {
+      await sendMediatorDocumentRequest(thread, interaction.user.id);
+    }
   } catch (error) {
     queries.close.run(new Date().toISOString(), result.lastInsertRowid);
     await thread.delete('Falha ao preparar o ticket').catch(() => null);
@@ -1208,9 +1197,11 @@ async function handleAdminButton(interaction) {
   }
 
   if (action === 'responsible') {
-    await interaction.showModal(
-      memberInputModal('responsible', 'Transferir responsável', 'ID ou menção do novo responsável'),
-    );
+    await interaction.reply({
+      content: 'Selecione o novo responsável:',
+      components: [userSelectRow('ticket_user:responsible', 'Escolha um membro da staff')],
+      ephemeral: true,
+    });
     return;
   }
 
@@ -1235,13 +1226,16 @@ async function handleAdminButton(interaction) {
   }
 
   if (action === 'add' || action === 'remove') {
-    await interaction.showModal(
-      memberInputModal(
-        action,
-        action === 'add' ? 'Adicionar pessoa' : 'Remover pessoa',
-        'ID ou menção da pessoa',
-      ),
-    );
+    await interaction.reply({
+      content: action === 'add' ? 'Selecione quem será adicionado:' : 'Selecione quem será removido:',
+      components: [
+        userSelectRow(
+          `ticket_user:${action}`,
+          action === 'add' ? 'Escolha uma pessoa para adicionar' : 'Escolha uma pessoa para remover',
+        ),
+      ],
+      ephemeral: true,
+    });
     return;
   }
 
@@ -1277,7 +1271,7 @@ async function handleAdminButton(interaction) {
   }
 }
 
-async function handleMemberModal(interaction) {
+async function handleTicketUserSelect(interaction) {
   if (!(await requireStaff(interaction))) return;
   const ticket = ticketForInteraction(interaction);
   if (!ticket || ticket.status !== 'aberto') {
@@ -1286,11 +1280,7 @@ async function handleMemberModal(interaction) {
   }
 
   const action = interaction.customId.split(':')[1];
-  const userId = parseMemberId(interaction.fields.getTextInputValue('member'));
-  if (!userId) {
-    await interaction.reply({ content: 'Informe um ID ou uma menção válida.', ephemeral: true });
-    return;
-  }
+  const userId = interaction.values[0];
   const selectedMember = await interaction.guild.members.fetch(userId).catch(() => null);
   if (!selectedMember || selectedMember.user.bot) {
     await interaction.reply({ content: 'Selecione um membro válido.', ephemeral: true });
@@ -1305,7 +1295,7 @@ async function handleMemberModal(interaction) {
     await interaction.channel.members.add(userId).catch(() => null);
     queries.assume.run(userId, ticket.id);
     await renameTicketThread(interaction.channel, ticket.type, selectedMember);
-    await interaction.reply({ content: 'Responsável atualizado.', ephemeral: true });
+    await interaction.update({ content: 'Responsável atualizado.', components: [] });
     const oldResponsible = ticket.responsible_id ? `<@${ticket.responsible_id}>` : '**não definido**';
     await interaction.channel.send({
       content: `🔁 Responsabilidade transferida de ${oldResponsible} para <@${userId}>.`,
@@ -1319,7 +1309,7 @@ async function handleMemberModal(interaction) {
   if (action === 'add') {
     await interaction.channel.members.add(userId);
     queries.addMember.run(ticket.id, userId);
-    await interaction.reply({ content: 'Pessoa adicionada ao ticket.', ephemeral: true });
+    await interaction.update({ content: 'Pessoa adicionada ao ticket.', components: [] });
     await interaction.channel.send({
       content: `➕ <@${userId}> foi adicionado ao ticket por <@${interaction.user.id}>.`,
       allowedMentions: { users: [userId, interaction.user.id] },
@@ -1337,7 +1327,7 @@ async function handleMemberModal(interaction) {
     }
     await interaction.channel.members.remove(userId).catch(() => null);
     queries.removeMember.run(ticket.id, userId);
-    await interaction.reply({ content: 'Pessoa removida do ticket.', ephemeral: true });
+    await interaction.update({ content: 'Pessoa removida do ticket.', components: [] });
     await interaction.channel.send({
       content: `➖ <@${userId}> foi removido do ticket por <@${interaction.user.id}>.`,
       allowedMentions: { users: [userId, interaction.user.id] },
@@ -1378,7 +1368,7 @@ async function handleSectorSelect(interaction) {
   });
 
   await newThread.members.add(ticket.user_id);
-  await addOperationalMembers(interaction.guild, newThread, targetKey);
+  await addOperationalMembers(interaction.guild, newThread);
   const extraMembers = queries.members.all(ticket.id);
   await Promise.allSettled(extraMembers.map(({ user_id: id }) => newThread.members.add(id)));
   if (ticket.responsible_id) await newThread.members.add(ticket.responsible_id).catch(() => null);
@@ -1414,6 +1404,9 @@ async function handleSectorSelect(interaction) {
       embeds: [ticketEmbed(updated, ticket.user_id), ...(protectedRecordEmbed ? [protectedRecordEmbed] : [])],
       components: adminComponents(false, targetKey === 'mediador' && mediatorRecord ? 'mediador' : null),
     });
+    if (targetKey === 'mediador') {
+      await sendMediatorDocumentRequest(newThread, ticket.user_id);
+    }
     await newThread.send(
       `📂 Ticket transferido de **${TICKET_TYPES[ticket.type].label}** para **${target.label}** por <@${interaction.user.id}>.`,
     );
@@ -1438,19 +1431,51 @@ async function handleMediatorsPanelButton(interaction) {
     return;
   }
   const action = interaction.customId.split(':')[1];
-  const definitions = {
-    give: ['Dar Cargo de Mediador', null],
-    remove: ['Tirar Cargo de Mediador', null],
+  const placeholders = {
+    give: 'Selecione quem receberá o cargo',
+    remove: 'Selecione quem perderá o cargo',
+    ban: 'Selecione o mediador que será banido',
+    leave: 'Selecione o mediador que dará baixa',
+    notify: 'Selecione o mediador que será notificado',
+    warn: 'Selecione o mediador que será advertido',
+    consult: 'Selecione o mediador para consultar',
+    history: 'Selecione o mediador para ver o histórico',
+  };
+  if (!placeholders[action]) return;
+  await interaction.reply({
+    content: 'Escolha o usuário diretamente na lista abaixo:',
+    components: [userSelectRow(`mediator_user:${action}`, placeholders[action])],
+    ephemeral: true,
+  });
+}
+
+async function handleMediatorUserSelect(interaction) {
+  if (!isMediatorPanelStaff(interaction.member)) {
+    await interaction.reply({ content: 'Apenas membros do cargo de staff podem usar este painel.', ephemeral: true });
+    return;
+  }
+  const action = interaction.customId.split(':')[1];
+  const userId = interaction.values[0];
+  const detailActions = {
     ban: ['Banir Mediador', 'Motivo do banimento'],
     leave: ['Dar Baixa no Mediador', 'Motivo da baixa'],
     notify: ['Notificar Mediador', 'Mensagem da notificação'],
     warn: ['Advertir Mediador', 'Motivo da advertência'],
-    consult: ['Consultar Mediador', null],
-    history: ['Histórico do Mediador', null],
   };
-  const definition = definitions[action];
-  if (!definition) return;
-  await interaction.showModal(mediatorPanelModal(action, definition[0], definition[1]));
+  const detailAction = detailActions[action];
+  if (detailAction) {
+    await interaction.showModal(
+      mediatorActionModal(action, userId, detailAction[0], detailAction[1]),
+    );
+    return;
+  }
+  await executeMediatorsPanelAction(interaction, action, userId);
+}
+
+async function handleMediatorActionModal(interaction) {
+  const [, action, userId] = interaction.customId.split(':');
+  const details = interaction.fields.getTextInputValue('details').trim();
+  await executeMediatorsPanelAction(interaction, action, userId, details);
 }
 
 async function mediatorRoleContext(guild, member) {
@@ -1482,15 +1507,9 @@ function mediatorActionLog(title, color, targetId, actorId, details = null) {
   return embed;
 }
 
-async function handleMediatorsPanelModal(interaction) {
+async function executeMediatorsPanelAction(interaction, action, userId, details = null) {
   if (!isMediatorPanelStaff(interaction.member)) {
     await interaction.reply({ content: 'Apenas membros do cargo de staff podem usar este painel.', ephemeral: true });
-    return;
-  }
-  const action = interaction.customId.split(':')[1];
-  const userId = parseMemberId(interaction.fields.getTextInputValue('member'));
-  if (!userId) {
-    await interaction.reply({ content: 'Informe um ID ou uma menção válida.', ephemeral: true });
     return;
   }
   const member = await interaction.guild.members.fetch(userId).catch(() => null);
@@ -1501,10 +1520,6 @@ async function handleMediatorsPanelModal(interaction) {
     await interaction.reply({ content: 'O usuário não existe no servidor ou não pode ser gerenciado.', ephemeral: true });
     return;
   }
-  const details = ['ban', 'leave', 'notify', 'warn'].includes(action)
-    ? interaction.fields.getTextInputValue('details').trim()
-    : null;
-
   if (action === 'give' || action === 'remove' || action === 'leave' || action === 'ban') {
     const context = await mediatorRoleContext(interaction.guild, member);
     if (context.error) {
@@ -1795,11 +1810,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isButton() && interaction.customId.startsWith('ticket:')) {
       return await handleAdminButton(interaction);
     }
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('modal:')) {
-      return await handleMemberModal(interaction);
+    if (interaction.isUserSelectMenu() && interaction.customId.startsWith('ticket_user:')) {
+      return await handleTicketUserSelect(interaction);
     }
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('mediator_panel_modal:')) {
-      return await handleMediatorsPanelModal(interaction);
+    if (interaction.isUserSelectMenu() && interaction.customId.startsWith('mediator_user:')) {
+      return await handleMediatorUserSelect(interaction);
+    }
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('mediator_action:')) {
+      return await handleMediatorActionModal(interaction);
     }
     if (interaction.isModalSubmit() && interaction.customId === 'mediator:application') {
       return await handleMediatorApplication(interaction);
