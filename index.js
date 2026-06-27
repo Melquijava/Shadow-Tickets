@@ -289,6 +289,7 @@ const queries = {
     WHERE user_id = ? AND status = 'aberto'
     ORDER BY id DESC LIMIT 1
   `),
+  openWeeklyPayments: db.prepare("SELECT * FROM weekly_payments WHERE status = 'aberto'"),
   confirmWeeklyPayment: db.prepare(`
     UPDATE weekly_payments
     SET status = 'pago', confirmed_at = ?, confirmed_by = ?
@@ -491,15 +492,14 @@ function weeklyPaymentEmbed(payment, userId) {
     .setTimestamp();
 }
 
-function weeklyPaymentComponents(disabled = false) {
+function weeklyPaymentComponents() {
   return [
     new ActionRowBuilder().addComponents(
       withCheckEmoji(
         new ButtonBuilder()
           .setCustomId('weekly_payment:confirm')
           .setLabel('Confirmar Pagamento')
-          .setStyle(ButtonStyle.Success)
-          .setDisabled(disabled),
+          .setStyle(ButtonStyle.Success),
       ),
     ),
   ];
@@ -1025,7 +1025,7 @@ async function createWeeklyPaymentThreadForMember(interaction) {
     content: `<@${interaction.user.id}> <@&${config.gerenteRoleId}> <@&${config.directorRoleId}>`,
     allowedMentions: { users: [interaction.user.id], roles: [config.gerenteRoleId, config.directorRoleId] },
     embeds: [weeklyPaymentEmbed(payment, interaction.user.id)],
-    components: weeklyPaymentComponents(false),
+    components: weeklyPaymentComponents(),
   });
 
   await interaction.editReply(`Tópico de renovação criado: <#${thread.id}>`);
@@ -1041,11 +1041,14 @@ async function handleWeeklyPaymentConfirm(interaction) {
   }
 
   const payment = queries.weeklyPaymentByThread.get(interaction.channelId);
-  if (!payment || payment.status !== 'aberto') {
-    await interaction.reply({ content: 'Esta renovação não está aberta ou não foi encontrada.', ephemeral: true });
+  if (!payment) {
+    await interaction.reply({ content: 'Esta renovação não foi encontrada.', ephemeral: true });
     return;
   }
-
+  if (payment.status !== 'aberto') {
+    await interaction.reply({ content: 'Este pagamento já foi confirmado.', ephemeral: true });
+    return;
+  }
   await interaction.deferReply({ ephemeral: true });
   const stats = await sendWeeklyPaymentProofsToLog(
     interaction.guild,
@@ -1056,9 +1059,6 @@ async function handleWeeklyPaymentConfirm(interaction) {
 
   queries.confirmWeeklyPayment.run(new Date().toISOString(), interaction.user.id, payment.id);
 
-  await interaction.message.edit({
-    components: weeklyPaymentComponents(true),
-  }).catch(() => null);
 
   await interaction.channel.send({
     content: `${checkEmojiText()} <@${payment.user_id}> renovou a mediação semanal com sucesso!\nPagamento confirmado por <@${interaction.user.id}>. Comprovantes enviados para os logs.\n\nUse \`!apagar\` neste tópico quando quiser remover a renovação manualmente.`,
@@ -1093,6 +1093,30 @@ async function handleWeeklyPaymentDeleteCommand(message) {
   });
   await new Promise((resolve) => setTimeout(resolve, 3000));
   await message.channel.delete(`Renovação semanal #${payment.id} apagada por ${message.author.tag}`);
+}
+
+async function refreshOpenWeeklyPaymentPanels(guild) {
+  for (const payment of queries.openWeeklyPayments.all()) {
+    const thread = await guild.channels.fetch(payment.thread_id).catch(() => null);
+    if (!thread?.isThread()) continue;
+
+    const messages = await fetchAllThreadMessages(thread).catch(() => []);
+    const panelMessage = messages.find(
+      (message) =>
+        message.author.id === client.user.id &&
+        message.components.some((row) =>
+          row.components.some((component) => component.customId === 'weekly_payment:confirm'),
+        ),
+    );
+
+    if (panelMessage) {
+      await panelMessage
+        .edit({ components: weeklyPaymentComponents() })
+        .catch((error) =>
+          console.error(`Falha ao destravar painel de renovação #${payment.id}:`, error),
+        );
+    }
+  }
 }
 
 function redactTranscriptText(value) {
@@ -2356,6 +2380,7 @@ client.once(Events.ClientReady, async (readyClient) => {
     await sendPanel(guild);
     await sendMediatorsPanel(guild);
     await refreshOpenTicketPanels(guild);
+    await refreshOpenWeeklyPaymentPanels(guild);
     console.log(`Shadow Tickets online como ${readyClient.user.tag}.`);
   } catch (error) {
     console.error('Falha na inicialização:', error);
