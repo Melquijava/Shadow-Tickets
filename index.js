@@ -7,6 +7,8 @@ const Database = require('better-sqlite3');
 const {
   ActionRowBuilder,
   AttachmentBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
   Client,
   Colors,
@@ -38,6 +40,7 @@ const REQUIRED_ENV = [
   'SUPORTE_ROLE_ID',
   'AUXILIAR_ROLE_ID',
   'MEDIADOR_ROLE_ID',
+  'RENOVACAO_SEMANAL_CHANNEL_ID',
   'MEDIADORES_CADASTRADOS_CHANNEL_ID',
   'LOG_CHANNEL_ID',
   'DATA_ENCRYPTION_KEY',
@@ -60,6 +63,7 @@ const config = {
   suporteRoleId: process.env.SUPORTE_ROLE_ID || null,
   auxiliarRoleId: process.env.AUXILIAR_ROLE_ID || null,
   mediatorRoleId: process.env.MEDIADOR_ROLE_ID,
+  weeklyRenewalChannelId: process.env.RENOVACAO_SEMANAL_CHANNEL_ID,
   ownerRoleId: process.env.OWNER_ROLE_ID || null,
   ownerUserId: process.env.DONO_USER_ID || null,
   registeredMediatorsChannelId: process.env.MEDIADORES_CADASTRADOS_CHANNEL_ID,
@@ -183,6 +187,16 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS weekly_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'aberto' CHECK(status IN ('aberto', 'pago')),
+    created_at TEXT NOT NULL,
+    confirmed_at TEXT,
+    confirmed_by TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -192,6 +206,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_mediator_applications_user ON mediator_applications(user_id);
   CREATE INDEX IF NOT EXISTS idx_mediator_history_user_date
     ON mediator_history(user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_weekly_payments_user_status
+    ON weekly_payments(user_id, status);
 `);
 
 const queries = {
@@ -260,6 +276,21 @@ const queries = {
     SELECT COUNT(*) AS total FROM mediator_history
     WHERE user_id = ? AND action = 'advertencia'
   `),
+  createWeeklyPayment: db.prepare(`
+    INSERT INTO weekly_payments (thread_id, user_id, created_at)
+    VALUES (?, ?, ?)
+  `),
+  weeklyPaymentByThread: db.prepare('SELECT * FROM weekly_payments WHERE thread_id = ?'),
+  openWeeklyPaymentByUser: db.prepare(`
+    SELECT * FROM weekly_payments
+    WHERE user_id = ? AND status = 'aberto'
+    ORDER BY id DESC LIMIT 1
+  `),
+  confirmWeeklyPayment: db.prepare(`
+    UPDATE weekly_payments
+    SET status = 'pago', confirmed_at = ?, confirmed_by = ?
+    WHERE id = ? AND status = 'aberto'
+  `),
   getSetting: db.prepare('SELECT value FROM settings WHERE key = ?'),
   setSetting: db.prepare(
     'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
@@ -268,7 +299,12 @@ const queries = {
 };
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
 });
 
 const commands = [
@@ -424,6 +460,43 @@ function adminComponents(disabled = false, type = null) {
         .setPlaceholder('Clique aqui para ver os controles do ticket')
         .setDisabled(disabled)
         .addOptions(options),
+    ),
+  ];
+}
+
+function weeklyPaymentEmbed(payment, userId) {
+  const createdTimestamp = Math.floor(new Date(payment.created_at).getTime() / 1000);
+  return new EmbedBuilder()
+    .setColor(0x00d4ff)
+    .setTitle('💳 Renovação Semanal')
+    .setDescription(
+      [
+        'Envie neste tópico:',
+        '',
+        '• Comprovante do pagamento',
+        '• Confirmação do site de pagamentos',
+        '',
+        'Depois aguarde a conferência da diretoria.',
+      ].join('\n'),
+    )
+    .addFields(
+      { name: 'Mediador', value: `<@${userId}>`, inline: true },
+      { name: 'Status', value: '🟡 Aguardando confirmação', inline: true },
+      { name: 'Aberto em', value: `<t:${createdTimestamp}:F>`, inline: false },
+    )
+    .setFooter({ text: 'Shadow Apostas • Renovação privada' })
+    .setTimestamp();
+}
+
+function weeklyPaymentComponents(disabled = false) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('weekly_payment:confirm')
+        .setLabel('Confirmar Pagamento')
+        .setEmoji('✅')
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(disabled),
     ),
   ];
 }
@@ -690,6 +763,207 @@ async function forwardThreadContent(sourceThread, targetThread) {
   return messages.length;
 }
 
+function weeklyPaymentTranscriptText(message) {
+  const author = `${message.author.tag} (${message.author.id})`;
+  const content = message.content || '[sem texto]';
+  const attachments = [...message.attachments.values()]
+    .map((attachment) => `Anexo: ${attachment.name || 'arquivo'} - ${attachment.url}`)
+    .join('\n');
+  const embeds = message.embeds
+    .map((embed) =>
+      [
+        embed.title ? `Embed título: ${embed.title}` : null,
+        embed.description ? `Embed descrição: ${embed.description}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    )
+    .filter(Boolean)
+    .join('\n');
+  return [
+    `[${message.createdAt.toISOString()}] ${author}`,
+    content,
+    attachments || null,
+    embeds || null,
+    '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+async function sendWeeklyPaymentProofsToLog(guild, thread, payment, confirmedById) {
+  const logChannel = await guild.channels.fetch(config.logChannelId).catch(() => null);
+  if (!logChannel?.isTextBased()) {
+    throw new Error('LOG_CHANNEL_ID não aponta para um canal de texto válido.');
+  }
+
+  const messages = await fetchAllThreadMessages(thread);
+  const userMessages = messages.filter((message) => !message.author.bot);
+  const proofMessages = userMessages.filter((message) => message.attachments.size > 0);
+  const transcript = [
+    `Renovação semanal #${payment.id}`,
+    `Tópico: ${thread.name} (${thread.id})`,
+    `Mediador: ${payment.user_id}`,
+    `Confirmado por: ${confirmedById}`,
+    `Gerado em: ${new Date().toISOString()}`,
+    '',
+    ...messages.map(weeklyPaymentTranscriptText),
+  ].join('\n');
+
+  await logChannel.send({
+    content: `💳 Renovação semanal confirmada • <@${payment.user_id}> • confirmado por <@${confirmedById}>`,
+    embeds: [
+      new EmbedBuilder()
+        .setColor(Colors.Green)
+        .setTitle('✅ Pagamento semanal confirmado')
+        .addFields(
+          { name: 'Mediador', value: `<@${payment.user_id}>`, inline: true },
+          { name: 'Confirmado por', value: `<@${confirmedById}>`, inline: true },
+          { name: 'Tópico', value: `<#${thread.id}>`, inline: true },
+          { name: 'Comprovantes encaminhados', value: String(proofMessages.length), inline: true },
+        )
+        .setTimestamp(),
+    ],
+    files: [
+      new AttachmentBuilder(Buffer.from(transcript, 'utf8'), {
+        name: `renovacao-semanal-${payment.id}.txt`,
+      }),
+    ],
+    allowedMentions: { parse: [] },
+  });
+
+  for (const message of proofMessages) {
+    await message.forward(logChannel).catch(async () => {
+      const attachmentLinks = [...message.attachments.values()]
+        .map((attachment) => `[${attachment.name || 'arquivo'}](${attachment.url})`)
+        .join('\n');
+      await logChannel.send({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(Colors.Blurple)
+            .setTitle('📎 Comprovante de renovação')
+            .setDescription(attachmentLinks || 'Não foi possível encaminhar o anexo automaticamente.')
+            .addFields(
+              { name: 'Mediador', value: `<@${payment.user_id}>`, inline: true },
+              { name: 'Mensagem original', value: message.url, inline: true },
+            )
+            .setTimestamp(),
+        ],
+        allowedMentions: { parse: [] },
+      });
+    });
+  }
+
+  return { totalMessages: messages.length, proofMessages: proofMessages.length };
+}
+
+async function handleWeeklyPaymentCommand(message) {
+  if (message.author.bot || message.guildId !== config.guildId) return;
+  if (message.channelId !== config.weeklyRenewalChannelId) return;
+  if (message.content.trim().toLowerCase() !== '!pgmt') return;
+
+  const member = await message.guild.members.fetch(message.author.id).catch(() => null);
+  if (!member?.roles.cache.has(config.mediatorRoleId)) {
+    await message.reply({
+      content: 'Apenas mediadores podem abrir tópico de renovação semanal.',
+      allowedMentions: { repliedUser: false },
+    });
+    return;
+  }
+
+  const existing = queries.openWeeklyPaymentByUser.get(message.author.id);
+  if (existing) {
+    const existingThread = await message.guild.channels.fetch(existing.thread_id).catch(() => null);
+    if (existingThread) {
+      await message.reply({
+        content: `Você já possui uma renovação aberta: <#${existing.thread_id}>`,
+        allowedMentions: { repliedUser: false },
+      });
+      return;
+    }
+  }
+
+  const channel = await fetchTextChannel(message.guild, config.weeklyRenewalChannelId, 'RENOVACAO_SEMANAL_CHANNEL_ID');
+  const thread = await channel.threads.create({
+    name: cleanThreadName('renovacao', message.author.username),
+    autoArchiveDuration: 1440,
+    type: ChannelType.PrivateThread,
+    invitable: false,
+    reason: `Renovação semanal aberta por ${message.author.tag}`,
+  });
+
+  queries.createWeeklyPayment.run(thread.id, message.author.id, new Date().toISOString());
+  const payment = queries.weeklyPaymentByThread.get(thread.id);
+
+  await thread.members.add(message.author.id);
+  await addRoleMembersToThread(message.guild, thread, config.directorRoleId);
+  if (config.ownerRoleId) await addRoleMembersToThread(message.guild, thread, config.ownerRoleId);
+
+  await thread.send({
+    content: `<@${message.author.id}> <@&${config.directorRoleId}>`,
+    allowedMentions: { users: [message.author.id], roles: [config.directorRoleId] },
+    embeds: [weeklyPaymentEmbed(payment, message.author.id)],
+    components: weeklyPaymentComponents(false),
+  });
+
+  await message.reply({
+    content: `Tópico de renovação criado: <#${thread.id}>`,
+    allowedMentions: { repliedUser: false },
+  });
+}
+
+async function handleWeeklyPaymentConfirm(interaction) {
+  if (!canConfirmWeeklyPayment(interaction.member)) {
+    await interaction.reply({
+      content: 'Apenas Diretor ou superiores podem confirmar pagamentos semanais.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const payment = queries.weeklyPaymentByThread.get(interaction.channelId);
+  if (!payment || payment.status !== 'aberto') {
+    await interaction.reply({ content: 'Esta renovação não está aberta ou não foi encontrada.', ephemeral: true });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  const stats = await sendWeeklyPaymentProofsToLog(
+    interaction.guild,
+    interaction.channel,
+    payment,
+    interaction.user.id,
+  );
+
+  queries.confirmWeeklyPayment.run(new Date().toISOString(), interaction.user.id, payment.id);
+
+  await interaction.message.edit({
+    components: weeklyPaymentComponents(true),
+  }).catch(() => null);
+
+  const publicChannel = await interaction.guild.channels
+    .fetch(config.weeklyRenewalChannelId)
+    .catch(() => null);
+  if (publicChannel?.isTextBased()) {
+    await publicChannel.send({
+      content: `✅ <@${payment.user_id}> renovou a mediação semanal com sucesso!`,
+      allowedMentions: { users: [payment.user_id] },
+    });
+  }
+
+  await interaction.channel.send({
+    content: `✅ Pagamento semanal confirmado por <@${interaction.user.id}>. Comprovantes enviados para os logs.`,
+    allowedMentions: { users: [interaction.user.id] },
+  });
+
+  await interaction.editReply(
+    `Pagamento confirmado. ${stats.proofMessages} comprovante(s) e transcript com ${stats.totalMessages} mensagem(ns) enviados aos logs.`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await interaction.channel.setLocked(true, `Renovação semanal #${payment.id} confirmada`).catch(() => null);
+  await interaction.channel.setArchived(true, `Renovação semanal #${payment.id} confirmada`).catch(() => null);
+}
+
 function redactTranscriptText(value) {
   return value
     .replace(/\b(\d{3})\.?\d{3}\.?\d{3}-?(\d{2})\b/g, '***.***.***-$2')
@@ -800,6 +1074,17 @@ function canCloseTicket(member) {
         member.permissions.has(PermissionFlagsBits.Administrator) ||
         member.roles.cache.has(config.ownerRoleId) ||
         getTicketCloseRoleIds().some((roleId) => member.roles.cache.has(roleId))),
+  );
+}
+
+function canConfirmWeeklyPayment(member) {
+  return Boolean(
+    member &&
+      (member.id === config.ownerUserId ||
+        member.id === member.guild.ownerId ||
+        member.permissions.has(PermissionFlagsBits.Administrator) ||
+        member.roles.cache.has(config.ownerRoleId) ||
+        member.roles.cache.has(config.directorRoleId)),
   );
 }
 
@@ -1933,10 +2218,25 @@ client.once(Events.ClientReady, async (readyClient) => {
   }
 });
 
+client.on(Events.MessageCreate, async (message) => {
+  try {
+    await handleWeeklyPaymentCommand(message);
+  } catch (error) {
+    console.error('Erro ao processar !pgmt:', error);
+    await message.reply({
+      content: 'Não foi possível abrir sua renovação semanal. Verifique as permissões e tente novamente.',
+      allowedMentions: { repliedUser: false },
+    }).catch(() => null);
+  }
+});
+
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (!interaction.inGuild() || interaction.guildId !== config.guildId) return;
     if (interaction.isChatInputCommand()) return await handleCommand(interaction);
+    if (interaction.isButton() && interaction.customId === 'weekly_payment:confirm') {
+      return await handleWeeklyPaymentConfirm(interaction);
+    }
     if (interaction.isButton() && interaction.customId.startsWith('open:')) {
       const type = interaction.customId.split(':')[1];
       if (type === 'mediador') return await interaction.showModal(mediatorApplicationModal());
