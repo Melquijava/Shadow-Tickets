@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const Database = require('better-sqlite3');
+const sharp = require('sharp');
 const {
   ActionRowBuilder,
   AttachmentBuilder,
@@ -634,6 +635,7 @@ async function ensureCheckEmoji(guild) {
   const existing = emojis.find((emoji) => emoji.name === CHECK_EMOJI_NAME);
   if (existing) {
     checkEmoji = existing;
+    console.log(`Emoji de check carregado: ${existing.toString()} (${existing.id})`);
     return existing;
   }
 
@@ -650,17 +652,30 @@ async function ensureCheckEmoji(guild) {
     return null;
   }
 
+  const emojiBuffer = await sharp(CHECK_EMOJI_PATH, { animated: false })
+    .resize(128, 128, {
+      fit: 'contain',
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .png({
+      compressionLevel: 9,
+      adaptiveFiltering: true,
+      palette: true,
+    })
+    .toBuffer();
+
   const created = await guild.emojis
     .create({
-      attachment: CHECK_EMOJI_PATH,
+      attachment: emojiBuffer,
       name: CHECK_EMOJI_NAME,
-      reason: 'Emoji de check padrão do Shadow Tickets',
+      reason: `Emoji de check padrão do Shadow Tickets criado a partir de ${CHECK_EMOJI_PATH}`,
     })
     .catch((error) => {
       console.error(`Falha ao criar emoji ${CHECK_EMOJI_NAME}:`, error);
       return null;
     });
   checkEmoji = created;
+  if (created) console.log(`Emoji de check criado: ${created.toString()} (${created.id})`);
   return created;
 }
 
