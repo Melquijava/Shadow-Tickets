@@ -33,6 +33,10 @@ const REQUIRED_ENV = [
   'EVENTOS_CHANNEL_ID',
   'VAGAS_MEDIADORES_CHANNEL_ID',
   'STAFF_ROLE_ID',
+  'DIRETOR_ROLE_ID',
+  'GERENTE_ROLE_ID',
+  'SUPORTE_ROLE_ID',
+  'AUXILIAR_ROLE_ID',
   'MEDIADOR_ROLE_ID',
   'MEDIADORES_CADASTRADOS_CHANNEL_ID',
   'LOG_CHANNEL_ID',
@@ -51,6 +55,10 @@ const config = {
   categoryId: process.env.TICKET_CATEGORY_ID || null,
   panelChannelId: process.env.OPEN_TICKET_CHANNEL_ID,
   staffRoleId: process.env.STAFF_ROLE_ID,
+  directorRoleId: process.env.DIRETOR_ROLE_ID || null,
+  gerenteRoleId: process.env.GERENTE_ROLE_ID || null,
+  suporteRoleId: process.env.SUPORTE_ROLE_ID || null,
+  auxiliarRoleId: process.env.AUXILIAR_ROLE_ID || null,
   mediatorRoleId: process.env.MEDIADOR_ROLE_ID,
   ownerRoleId: process.env.OWNER_ROLE_ID || null,
   ownerUserId: process.env.DONO_USER_ID || null,
@@ -753,12 +761,46 @@ function isStaff(member) {
   return Boolean(
     member &&
       (member.permissions.has(PermissionFlagsBits.Administrator) ||
-        member.roles.cache.has(config.staffRoleId)),
+        getTicketStaffRoleIds().some((roleId) => member.roles.cache.has(roleId))),
   );
 }
 
 function isMediatorPanelStaff(member) {
   return Boolean(member?.roles.cache.has(config.staffRoleId));
+}
+
+function uniqueIds(ids) {
+  return [...new Set(ids.filter(Boolean))];
+}
+
+function getTicketStaffRoleIds() {
+  const configuredRoles = uniqueIds([
+    config.directorRoleId,
+    config.gerenteRoleId,
+    config.suporteRoleId,
+    config.auxiliarRoleId,
+  ]);
+  return configuredRoles.length ? configuredRoles : uniqueIds([config.staffRoleId]);
+}
+
+function getTicketCloseRoleIds() {
+  const configuredRoles = uniqueIds([
+    config.directorRoleId,
+    config.gerenteRoleId,
+    config.suporteRoleId,
+    config.auxiliarRoleId,
+  ]);
+  return configuredRoles.length ? configuredRoles : uniqueIds([config.staffRoleId]);
+}
+
+function canCloseTicket(member) {
+  return Boolean(
+    member &&
+      (member.id === config.ownerUserId ||
+        member.permissions.has(PermissionFlagsBits.Administrator) ||
+        member.roles.cache.has(config.ownerRoleId) ||
+        getTicketCloseRoleIds().some((roleId) => member.roles.cache.has(roleId))),
+  );
 }
 
 const MEDIATOR_ACTION_LABELS = {
@@ -812,7 +854,13 @@ async function addRoleMembersToThread(guild, thread, roleId) {
 }
 
 async function addOperationalMembers(guild, thread) {
-  await addRoleMembersToThread(guild, thread, config.staffRoleId);
+  await Promise.allSettled(
+    getTicketStaffRoleIds().map((roleId) => addRoleMembersToThread(guild, thread, roleId)),
+  );
+}
+
+function operationalRoleMentions() {
+  return getTicketStaffRoleIds().map((roleId) => `<@&${roleId}>`).join(' ');
 }
 
 async function sendLog(guild, embed) {
@@ -955,8 +1003,8 @@ async function createTicket(interaction, typeKey, mediatorApplication = null) {
       );
     }
     await thread.send({
-      content: `<@${interaction.user.id}> <@&${config.staffRoleId}>`,
-      allowedMentions: { users: [interaction.user.id], roles: [config.staffRoleId] },
+      content: `<@${interaction.user.id}> ${operationalRoleMentions()}`,
+      allowedMentions: { users: [interaction.user.id], roles: getTicketStaffRoleIds() },
       embeds: [
         ticketEmbed(ticket, interaction.user.id),
         ...(mediatorApplication ? [protectedApplicationEmbed(mediatorApplication)] : []),
@@ -1072,7 +1120,16 @@ async function closeTicket(interaction, ticket) {
 async function requireStaff(interaction) {
   if (isStaff(interaction.member)) return true;
   await interaction.reply({
-    content: 'Apenas a equipe de staff pode usar este controle.',
+    content: 'Apenas cargos de Auxiliar ou superiores podem usar este controle.',
+    ephemeral: true,
+  });
+  return false;
+}
+
+async function requireTicketClosePermission(interaction) {
+  if (canCloseTicket(interaction.member)) return true;
+  await interaction.reply({
+    content: 'Você não tem permissão para fechar tickets. Apenas Auxiliar ou superiores, Owner/Dono ou Administrador podem fechar.',
     ephemeral: true,
   });
   return false;
@@ -1303,6 +1360,13 @@ async function handleAdminButton(interaction) {
   }
 
   if (action === 'close') {
+    if (!canCloseTicket(interaction.member)) {
+      await interaction.reply({
+        content: 'Você não tem permissão para fechar tickets. Apenas Auxiliar ou superiores, Owner/Dono ou Administrador podem fechar.',
+        ephemeral: true,
+      });
+      return;
+    }
     await interaction.reply({
       embeds: [
         new EmbedBuilder()
@@ -1336,7 +1400,10 @@ async function handleAdminButton(interaction) {
     return;
   }
 
-  if (action === 'close_confirm') return await closeTicket(interaction, ticket);
+  if (action === 'close_confirm') {
+    if (!(await requireTicketClosePermission(interaction))) return;
+    return await closeTicket(interaction, ticket);
+  }
   if (action === 'close_cancel') {
     await interaction.update({ content: 'Fechamento cancelado.', embeds: [], components: [] });
   }
@@ -1467,11 +1534,11 @@ async function handleSectorSelect(interaction) {
       content: [
         `<@${ticket.user_id}>`,
         ticket.responsible_id ? `<@${ticket.responsible_id}>` : null,
-        `<@&${config.staffRoleId}>`,
+        operationalRoleMentions(),
       ]
         .filter(Boolean)
         .join(' '),
-      allowedMentions: { users: mentionedUsers, roles: [config.staffRoleId] },
+      allowedMentions: { users: mentionedUsers, roles: getTicketStaffRoleIds() },
       embeds: [ticketEmbed(updated, ticket.user_id), ...(protectedRecordEmbed ? [protectedRecordEmbed] : [])],
       components: adminComponents(false, targetKey === 'mediador' && mediatorRecord ? 'mediador' : null),
     });
@@ -1839,9 +1906,11 @@ async function handleCommand(interaction) {
   }
 
   if (interaction.commandName === 'ticket-fechar') {
-    const canClose = interaction.user.id === ticket.user_id || isStaff(interaction.member);
-    if (!canClose) {
-      await interaction.reply({ content: 'Apenas o solicitante ou a staff pode fechar este ticket.', ephemeral: true });
+    if (!canCloseTicket(interaction.member)) {
+      await interaction.reply({
+        content: 'Você não tem permissão para fechar tickets. Apenas Auxiliar ou superiores, Owner/Dono ou Administrador podem fechar.',
+        ephemeral: true,
+      });
       return;
     }
     await closeTicket(interaction, ticket);
@@ -1944,3 +2013,4 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 client.login(config.token);
+

@@ -20,6 +20,14 @@ Bot de tickets privados por tópicos para o servidor Shadow Apostas.
 
 O bot registra os comandos diretamente no servidor configurado por `GUILD_ID`, cria `tickets.db` automaticamente e mantém um único painel principal no canal configurado.
 
+## Permissões dos tickets
+
+- Preencha `DIRETOR_ROLE_ID`, `GERENTE_ROLE_ID`, `SUPORTE_ROLE_ID` e `AUXILIAR_ROLE_ID`.
+- O cargo `FILA` não deve ser configurado.
+- Director, Gerente, Suporte e Auxiliar podem usar todos os controles administrativos dos tickets, incluindo fechamento.
+- ADM Shadow, Fila e cargos abaixo não podem fechar tickets.
+- `STAFF_ROLE_ID` continua sendo usado em recursos internos/painel de mediadores, mas as permissões dos tickets usam os cargos separados acima.
+
 ## Railway
 
 1. Crie um Volume no serviço e monte-o em `/data`.
@@ -37,4 +45,4 @@ O banco `tickets.db` e seus arquivos WAL ficam dentro do volume persistente. Sem
 - `/mediador-dados usuario:@usuario` — consulta dados completos em resposta privada, restrita a `OWNER_ROLE_ID` ou `DONO_USER_ID`.
 - `/setup-mediadores` — recria o painel fixo de administração de mediadores.
 
-Os comandos de configuração e fechamento administrativo exigem o cargo configurado em `STAFF_ROLE_ID` ou a permissão de administrador.
+Os comandos de configuração exigem cargo operacional ou permissão de administrador. O fechamento exige Auxiliar ou superior, Owner/Dono ou Administrador.
