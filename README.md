@@ -55,5 +55,7 @@ Os comandos de configuração exigem cargo operacional ou permissão de administ
 - Mediadores clicam no botão do painel para abrir o tópico privado e enviar os comprovantes.
 - O mediador envia comprovante e confirmação do site dentro do tópico.
 - Apenas Gerente ou superiores podem confirmar o pagamento dentro do tópico.
-- Ao confirmar, o bot envia os comprovantes/transcript para `LOG_CHANNEL_ID`, avisa no canal de renovação e arquiva o tópico.
+- Ao confirmar, o bot envia os comprovantes/transcript para `LOG_CHANNEL_ID` e avisa dentro do próprio tópico.
+- O tópico não é arquivado nem apagado automaticamente.
+- Gerente ou superiores podem apagar manualmente o tópico usando `!apagar` dentro dele.
 - Ative a intent **Message Content Intent** no Discord Developer Portal para o comando `!pgmt` funcionar.

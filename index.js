@@ -96,6 +96,9 @@ const DATA_DIR = process.env.DATA_DIR?.trim() ||
   (process.env.RAILWAY_ENVIRONMENT ? '/data' : __dirname);
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const DATABASE_PATH = path.join(DATA_DIR, 'tickets.db');
+const CHECK_EMOJI_NAME = 'shadow_check';
+const CHECK_EMOJI_PATH = path.join(__dirname, 'assets', 'gifs', 'check.webp');
+let checkEmoji = null;
 
 const TICKET_TYPES = {
   suporte: {
@@ -409,7 +412,7 @@ function mediatorsPanelComponents() {
         .setCustomId('mediators:admin_menu')
         .setPlaceholder('Clique aqui para ver os controles de mediadores')
         .addOptions(
-          { label: 'Dar Cargo', description: 'Adicionar o cargo de mediador.', value: 'give', emoji: '✅' },
+          { label: 'Dar Cargo', description: 'Adicionar o cargo de mediador.', value: 'give', emoji: checkEmojiOption() },
           { label: 'Tirar Cargo', description: 'Remover o cargo de mediador.', value: 'remove', emoji: '❌' },
           { label: 'Banir Mediador', description: 'Remover e banir um mediador.', value: 'ban', emoji: '⛔' },
           { label: 'Dar Baixa', description: 'Registrar a baixa de um mediador.', value: 'leave', emoji: '📉' },
@@ -440,7 +443,7 @@ function mediatorActionModal(action, userId, title, detailLabel) {
 
 function adminComponents(disabled = false, type = null) {
   const options = [
-    { label: 'Assumir Ticket', description: 'Tornar-se responsável pelo atendimento.', value: 'claim', emoji: '✅' },
+    { label: 'Assumir Ticket', description: 'Tornar-se responsável pelo atendimento.', value: 'claim', emoji: checkEmojiOption() },
     { label: 'Transferir Responsável', description: 'Escolher outro responsável.', value: 'responsible', emoji: '🔁' },
     { label: 'Transferir Setor', description: 'Mover o ticket para outro setor.', value: 'sector', emoji: '📂' },
     { label: 'Adicionar Pessoa', description: 'Adicionar alguém ao tópico.', value: 'add', emoji: '➕' },
@@ -449,7 +452,7 @@ function adminComponents(disabled = false, type = null) {
   ];
   if (type === 'mediador') {
     options.push(
-      { label: 'Aprovar Mediador', description: 'Aprovar esta candidatura.', value: 'mediator_approve', emoji: '✅' },
+      { label: 'Aprovar Mediador', description: 'Aprovar esta candidatura.', value: 'mediator_approve', emoji: checkEmojiOption() },
       { label: 'Recusar Mediador', description: 'Recusar esta candidatura.', value: 'mediator_reject', emoji: '❌' },
     );
   }
@@ -491,12 +494,13 @@ function weeklyPaymentEmbed(payment, userId) {
 function weeklyPaymentComponents(disabled = false) {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('weekly_payment:confirm')
-        .setLabel('Confirmar Pagamento')
-        .setEmoji('✅')
-        .setStyle(ButtonStyle.Success)
-        .setDisabled(disabled),
+      withCheckEmoji(
+        new ButtonBuilder()
+          .setCustomId('weekly_payment:confirm')
+          .setLabel('Confirmar Pagamento')
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(disabled),
+      ),
     ),
   ];
 }
@@ -605,6 +609,59 @@ function userSelectRow(customId, placeholder) {
       .setMinValues(1)
       .setMaxValues(1),
   );
+}
+
+function checkEmojiOption() {
+  return checkEmoji
+    ? { id: checkEmoji.id, name: checkEmoji.name, animated: checkEmoji.animated }
+    : undefined;
+}
+
+function checkEmojiText() {
+  if (!checkEmoji) return '';
+  return checkEmoji.animated
+    ? `<a:${checkEmoji.name}:${checkEmoji.id}>`
+    : `<:${checkEmoji.name}:${checkEmoji.id}>`;
+}
+
+function withCheckEmoji(component) {
+  const emoji = checkEmojiOption();
+  return emoji ? component.setEmoji(emoji) : component;
+}
+
+async function ensureCheckEmoji(guild) {
+  const emojis = await guild.emojis.fetch().catch(() => guild.emojis.cache);
+  const existing = emojis.find((emoji) => emoji.name === CHECK_EMOJI_NAME);
+  if (existing) {
+    checkEmoji = existing;
+    return existing;
+  }
+
+  const botMember = guild.members.me || (await guild.members.fetchMe().catch(() => null));
+  if (!botMember?.permissions.has(PermissionFlagsBits.ManageGuildExpressions)) {
+    console.warn(
+      `Não foi possível criar o emoji ${CHECK_EMOJI_NAME}: falta a permissão Gerenciar Expressões.`,
+    );
+    return null;
+  }
+
+  if (!fs.existsSync(CHECK_EMOJI_PATH)) {
+    console.warn(`Arquivo do emoji de check não encontrado: ${CHECK_EMOJI_PATH}`);
+    return null;
+  }
+
+  const created = await guild.emojis
+    .create({
+      attachment: CHECK_EMOJI_PATH,
+      name: CHECK_EMOJI_NAME,
+      reason: 'Emoji de check padrão do Shadow Tickets',
+    })
+    .catch((error) => {
+      console.error(`Falha ao criar emoji ${CHECK_EMOJI_NAME}:`, error);
+      return null;
+    });
+  checkEmoji = created;
+  return created;
 }
 
 function encryptSensitive(value) {
@@ -849,7 +906,7 @@ async function sendWeeklyPaymentProofsToLog(guild, thread, payment, confirmedByI
     embeds: [
       new EmbedBuilder()
         .setColor(Colors.Green)
-        .setTitle('✅ Pagamento semanal confirmado')
+        .setTitle(`${checkEmojiText()} Pagamento semanal confirmado`)
         .addFields(
           { name: 'Mediador', value: `<@${payment.user_id}>`, inline: true },
           { name: 'Confirmado por', value: `<@${confirmedById}>`, inline: true },
@@ -1003,27 +1060,39 @@ async function handleWeeklyPaymentConfirm(interaction) {
     components: weeklyPaymentComponents(true),
   }).catch(() => null);
 
-  const publicChannel = await interaction.guild.channels
-    .fetch(config.weeklyRenewalChannelId)
-    .catch(() => null);
-  if (publicChannel?.isTextBased()) {
-    await publicChannel.send({
-      content: `✅ <@${payment.user_id}> renovou a mediação semanal com sucesso!`,
-      allowedMentions: { users: [payment.user_id] },
-    });
-  }
-
   await interaction.channel.send({
-    content: `✅ Pagamento semanal confirmado por <@${interaction.user.id}>. Comprovantes enviados para os logs.`,
-    allowedMentions: { users: [interaction.user.id] },
+    content: `${checkEmojiText()} <@${payment.user_id}> renovou a mediação semanal com sucesso!\nPagamento confirmado por <@${interaction.user.id}>. Comprovantes enviados para os logs.\n\nUse \`!apagar\` neste tópico quando quiser remover a renovação manualmente.`,
+    allowedMentions: { users: [payment.user_id, interaction.user.id] },
   });
 
   await interaction.editReply(
     `Pagamento confirmado. ${stats.proofMessages} comprovante(s) e transcript com ${stats.totalMessages} mensagem(ns) enviados aos logs.`,
   );
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-  await interaction.channel.setLocked(true, `Renovação semanal #${payment.id} confirmada`).catch(() => null);
-  await interaction.channel.setArchived(true, `Renovação semanal #${payment.id} confirmada`).catch(() => null);
+}
+
+async function handleWeeklyPaymentDeleteCommand(message) {
+  if (message.author.bot || message.guildId !== config.guildId) return;
+  if (message.content.trim().toLowerCase() !== '!apagar') return;
+  if (!message.channel?.isThread()) return;
+
+  const payment = queries.weeklyPaymentByThread.get(message.channelId);
+  if (!payment) return;
+
+  const member = await message.guild.members.fetch(message.author.id).catch(() => null);
+  if (!canConfirmWeeklyPayment(member)) {
+    await message.reply({
+      content: 'Apenas Gerente ou superiores podem apagar tópicos de renovação semanal.',
+      allowedMentions: { repliedUser: false },
+    });
+    return;
+  }
+
+  await message.reply({
+    content: 'Tópico de renovação será apagado em 3 segundos.',
+    allowedMentions: { repliedUser: false },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  await message.channel.delete(`Renovação semanal #${payment.id} apagada por ${message.author.tag}`);
 }
 
 function redactTranscriptText(value) {
@@ -1545,7 +1614,7 @@ async function approveMediator(interaction, ticket) {
   const address = decryptSensitive(application.address_encrypted);
   const controlEmbed = new EmbedBuilder()
     .setColor(Colors.Green)
-    .setTitle('✅ Mediador aprovado')
+    .setTitle(`${checkEmojiText()} Mediador aprovado`)
     .addFields(
       { name: 'Usuário Discord', value: `<@${ticket.user_id}>`, inline: true },
       { name: 'ID Discord', value: ticket.user_id, inline: true },
@@ -1580,12 +1649,12 @@ async function approveMediator(interaction, ticket) {
   }
 
   await interaction.channel.send({
-    content: `✅ <@${ticket.user_id}> foi aprovado como mediador por <@${interaction.user.id}>.`,
+    content: `${checkEmojiText()} <@${ticket.user_id}> foi aprovado como mediador por <@${interaction.user.id}>.`,
     allowedMentions: { users: [ticket.user_id, interaction.user.id] },
   });
   await sendMediatorLog(
     guild,
-    mediatorActionLog('✅ Mediador aprovado', Colors.Green, ticket.user_id, interaction.user.id),
+    mediatorActionLog(`${checkEmojiText()} Mediador aprovado`, Colors.Green, ticket.user_id, interaction.user.id),
   );
   await interaction.editReply('Mediador aprovado com sucesso.');
 }
@@ -1669,7 +1738,7 @@ async function handleAdminButton(interaction) {
     queries.assume.run(interaction.user.id, ticket.id);
     await renameTicketThread(interaction.channel, ticket.type, staffMember);
     await interaction.reply({
-      content: `✅ Ticket assumido por <@${interaction.user.id}>.`,
+      content: `${checkEmojiText()} Ticket assumido por <@${interaction.user.id}>.`,
       allowedMentions: { users: [interaction.user.id] },
     });
     return;
@@ -2032,7 +2101,7 @@ async function executeMediatorsPanelAction(interaction, action, userId, details 
       saveMediatorAction(userId, 'cargo_adicionado', null, interaction.user.id, 'Ativo');
       await sendMediatorLog(
         interaction.guild,
-        mediatorActionLog('✅ Cargo de mediador concedido', Colors.Green, userId, interaction.user.id),
+        mediatorActionLog(`${checkEmojiText()} Cargo de mediador concedido`, Colors.Green, userId, interaction.user.id),
       );
       await interaction.editReply('Cargo de mediador concedido e ação registrada.');
       return;
@@ -2134,7 +2203,7 @@ async function executeMediatorsPanelAction(interaction, action, userId, details 
             { name: 'Status', value: status, inline: true },
             {
               name: 'Cargo atual',
-              value: member?.roles.cache.has(config.mediatorRoleId) ? '✅ Possui' : '❌ Não possui',
+              value: member?.roles.cache.has(config.mediatorRoleId) ? `${checkEmojiText()} Possui` : '❌ Não possui',
               inline: true,
             },
             { name: 'Total de advertências', value: String(totalWarnings), inline: true },
@@ -2283,6 +2352,7 @@ client.once(Events.ClientReady, async (readyClient) => {
       body: commands,
     });
     const guild = await readyClient.guilds.fetch(config.guildId);
+    await ensureCheckEmoji(guild);
     await sendPanel(guild);
     await sendMediatorsPanel(guild);
     await refreshOpenTicketPanels(guild);
@@ -2294,11 +2364,12 @@ client.once(Events.ClientReady, async (readyClient) => {
 
 client.on(Events.MessageCreate, async (message) => {
   try {
+    await handleWeeklyPaymentDeleteCommand(message);
     await handleWeeklyPaymentCommand(message);
   } catch (error) {
-    console.error('Erro ao processar !pgmt:', error);
+    console.error('Erro ao processar comando de mensagem:', error);
     await message.reply({
-      content: 'Não foi possível publicar o painel de renovação semanal. Verifique as permissões e tente novamente.',
+      content: 'Não foi possível concluir este comando. Verifique as permissões e tente novamente.',
       allowedMentions: { repliedUser: false },
     }).catch(() => null);
   }
