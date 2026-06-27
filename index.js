@@ -501,6 +501,40 @@ function weeklyPaymentComponents(disabled = false) {
   ];
 }
 
+function weeklyRenewalPanelEmbed(authorId) {
+  return new EmbedBuilder()
+    .setColor(0x00d4ff)
+    .setTitle('💳 Renovação Semanal')
+    .setDescription(
+      [
+        'O pagamento semanal dos mediadores está aberto.',
+        '',
+        'Clique no botão abaixo para criar seu tópico privado e enviar:',
+        '',
+        '• Comprovante do pagamento',
+        '• Confirmação do site de pagamentos',
+      ].join('\n'),
+    )
+    .addFields(
+      { name: 'Publicado por', value: `<@${authorId}>`, inline: true },
+      { name: 'Status', value: '🟢 Aberto para renovação', inline: true },
+    )
+    .setFooter({ text: 'Shadow Apostas • Renovação semanal' })
+    .setTimestamp();
+}
+
+function weeklyRenewalPanelComponents() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('weekly_payment:open')
+        .setLabel('Enviar Comprovante')
+        .setEmoji('💳')
+        .setStyle(ButtonStyle.Primary),
+    ),
+  ];
+}
+
 function ticketEmbed(ticket, openerId) {
   const type = TICKET_TYPES[ticket.type];
   return new EmbedBuilder()
@@ -863,59 +897,87 @@ async function handleWeeklyPaymentCommand(message) {
   if (message.content.trim().toLowerCase() !== '!pgmt') return;
 
   const member = await message.guild.members.fetch(message.author.id).catch(() => null);
-  if (!member?.roles.cache.has(config.mediatorRoleId)) {
+  if (!canPublishWeeklyPaymentPanel(member)) {
     await message.reply({
-      content: 'Apenas mediadores podem abrir tópico de renovação semanal.',
+      content: 'Apenas Diretor ou superiores podem publicar o painel de renovação semanal.',
       allowedMentions: { repliedUser: false },
     });
     return;
   }
 
-  const existing = queries.openWeeklyPaymentByUser.get(message.author.id);
+  await message.channel.send({
+    embeds: [weeklyRenewalPanelEmbed(message.author.id)],
+    components: weeklyRenewalPanelComponents(),
+  });
+
+  await message.reply({
+    content: 'Painel de renovação semanal publicado.',
+    allowedMentions: { repliedUser: false },
+  });
+}
+
+async function createWeeklyPaymentThreadForMember(interaction) {
+  if (interaction.channelId !== config.weeklyRenewalChannelId) {
+    await interaction.reply({
+      content: 'Este botão só pode ser usado no canal de renovação semanal.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+  if (!member?.roles.cache.has(config.mediatorRoleId)) {
+    await interaction.reply({
+      content: 'Apenas mediadores podem abrir tópico de renovação semanal.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const existing = queries.openWeeklyPaymentByUser.get(interaction.user.id);
   if (existing) {
-    const existingThread = await message.guild.channels.fetch(existing.thread_id).catch(() => null);
+    const existingThread = await interaction.guild.channels.fetch(existing.thread_id).catch(() => null);
     if (existingThread) {
-      await message.reply({
+      await interaction.reply({
         content: `Você já possui uma renovação aberta: <#${existing.thread_id}>`,
-        allowedMentions: { repliedUser: false },
+        ephemeral: true,
       });
       return;
     }
   }
 
-  const channel = await fetchTextChannel(message.guild, config.weeklyRenewalChannelId, 'RENOVACAO_SEMANAL_CHANNEL_ID');
+  await interaction.deferReply({ ephemeral: true });
+  const channel = await fetchTextChannel(interaction.guild, config.weeklyRenewalChannelId, 'RENOVACAO_SEMANAL_CHANNEL_ID');
   const thread = await channel.threads.create({
-    name: cleanThreadName('renovacao', message.author.username),
+    name: cleanThreadName('renovacao', interaction.user.username),
     autoArchiveDuration: 1440,
     type: ChannelType.PrivateThread,
     invitable: false,
-    reason: `Renovação semanal aberta por ${message.author.tag}`,
+    reason: `Renovação semanal aberta por ${interaction.user.tag}`,
   });
 
-  queries.createWeeklyPayment.run(thread.id, message.author.id, new Date().toISOString());
+  queries.createWeeklyPayment.run(thread.id, interaction.user.id, new Date().toISOString());
   const payment = queries.weeklyPaymentByThread.get(thread.id);
 
-  await thread.members.add(message.author.id);
-  await addRoleMembersToThread(message.guild, thread, config.directorRoleId);
-  if (config.ownerRoleId) await addRoleMembersToThread(message.guild, thread, config.ownerRoleId);
+  await thread.members.add(interaction.user.id);
+  await addRoleMembersToThread(interaction.guild, thread, config.gerenteRoleId);
+  await addRoleMembersToThread(interaction.guild, thread, config.directorRoleId);
+  if (config.ownerRoleId) await addRoleMembersToThread(interaction.guild, thread, config.ownerRoleId);
 
   await thread.send({
-    content: `<@${message.author.id}> <@&${config.directorRoleId}>`,
-    allowedMentions: { users: [message.author.id], roles: [config.directorRoleId] },
-    embeds: [weeklyPaymentEmbed(payment, message.author.id)],
+    content: `<@${interaction.user.id}> <@&${config.gerenteRoleId}> <@&${config.directorRoleId}>`,
+    allowedMentions: { users: [interaction.user.id], roles: [config.gerenteRoleId, config.directorRoleId] },
+    embeds: [weeklyPaymentEmbed(payment, interaction.user.id)],
     components: weeklyPaymentComponents(false),
   });
 
-  await message.reply({
-    content: `Tópico de renovação criado: <#${thread.id}>`,
-    allowedMentions: { repliedUser: false },
-  });
+  await interaction.editReply(`Tópico de renovação criado: <#${thread.id}>`);
 }
 
 async function handleWeeklyPaymentConfirm(interaction) {
   if (!canConfirmWeeklyPayment(interaction.member)) {
     await interaction.reply({
-      content: 'Apenas Diretor ou superiores podem confirmar pagamentos semanais.',
+      content: 'Apenas Gerente ou superiores podem confirmar pagamentos semanais.',
       ephemeral: true,
     });
     return;
@@ -1078,6 +1140,18 @@ function canCloseTicket(member) {
 }
 
 function canConfirmWeeklyPayment(member) {
+  return Boolean(
+    member &&
+      (member.id === config.ownerUserId ||
+        member.id === member.guild.ownerId ||
+        member.permissions.has(PermissionFlagsBits.Administrator) ||
+        member.roles.cache.has(config.ownerRoleId) ||
+        member.roles.cache.has(config.gerenteRoleId) ||
+        member.roles.cache.has(config.directorRoleId)),
+  );
+}
+
+function canPublishWeeklyPaymentPanel(member) {
   return Boolean(
     member &&
       (member.id === config.ownerUserId ||
@@ -2224,7 +2298,7 @@ client.on(Events.MessageCreate, async (message) => {
   } catch (error) {
     console.error('Erro ao processar !pgmt:', error);
     await message.reply({
-      content: 'Não foi possível abrir sua renovação semanal. Verifique as permissões e tente novamente.',
+      content: 'Não foi possível publicar o painel de renovação semanal. Verifique as permissões e tente novamente.',
       allowedMentions: { repliedUser: false },
     }).catch(() => null);
   }
@@ -2234,6 +2308,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (!interaction.inGuild() || interaction.guildId !== config.guildId) return;
     if (interaction.isChatInputCommand()) return await handleCommand(interaction);
+    if (interaction.isButton() && interaction.customId === 'weekly_payment:open') {
+      return await createWeeklyPaymentThreadForMember(interaction);
+    }
     if (interaction.isButton() && interaction.customId === 'weekly_payment:confirm') {
       return await handleWeeklyPaymentConfirm(interaction);
     }

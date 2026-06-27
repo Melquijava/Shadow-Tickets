@@ -44,15 +44,16 @@ O banco `tickets.db` e seus arquivos WAL ficam dentro do volume persistente. Sem
 - `/ticket-fechar` — fecha o ticket do tópico atual.
 - `/mediador-dados usuario:@usuario` — consulta dados completos em resposta privada, restrita a `OWNER_ROLE_ID` ou `DONO_USER_ID`.
 - `/setup-mediadores` — recria o painel fixo de administração de mediadores.
-- `!pgmt` — usado no canal `RENOVACAO_SEMANAL_CHANNEL_ID` por mediadores para abrir um tópico privado de renovação semanal.
+- `!pgmt` — usado no canal `RENOVACAO_SEMANAL_CHANNEL_ID` por Diretor ou superiores para publicar o painel de renovação semanal.
 
 Os comandos de configuração exigem cargo operacional ou permissão de administrador. O fechamento exige Auxiliar ou superior, Owner/Dono ou Administrador.
 
 ## Renovação semanal
 
 - Configure `RENOVACAO_SEMANAL_CHANNEL_ID` com o canal onde os avisos e links de pagamento são enviados.
-- Mediadores usam `!pgmt` nesse canal para abrir um tópico privado.
+- Diretor ou superiores usam `!pgmt` nesse canal, depois de enviar o link de pagamento, para publicar o painel.
+- Mediadores clicam no botão do painel para abrir o tópico privado e enviar os comprovantes.
 - O mediador envia comprovante e confirmação do site dentro do tópico.
-- Apenas Diretor ou superiores podem confirmar o pagamento.
+- Apenas Gerente ou superiores podem confirmar o pagamento dentro do tópico.
 - Ao confirmar, o bot envia os comprovantes/transcript para `LOG_CHANNEL_ID`, avisa no canal de renovação e arquiva o tópico.
 - Ative a intent **Message Content Intent** no Discord Developer Portal para o comando `!pgmt` funcionar.
